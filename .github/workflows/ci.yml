@@ -2,7 +2,7 @@
 #
 # Every `uses:` is pinned to a full commit SHA (with the release tag in a
 # comment) so a moved tag can never change what runs here. Jobs are named to
-# read well on the PR checks list; they are the required checks for main.
+# read well on the PR checks list and to be used as required checks on main.
 name: CI
 
 on:
@@ -12,14 +12,16 @@ on:
     branches: [main]
 
 # Least privilege: nothing here needs to write to the repo. Gitleaks PR
-# comments are disabled below so no job needs pull-requests: write.
+# comments are disabled below so no job needs pull-requests: write; the
+# secret-scan job adds pull-requests: read for itself.
 permissions:
   contents: read
 
-# A newer push to the same branch/PR cancels the run it supersedes.
+# A newer push to the same PR cancels the run it supersedes. Runs on main
+# are never cancelled, so every commit on main keeps its own status.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   IMAGE_TAG: macky-merch-api:ci
@@ -97,12 +99,19 @@ jobs:
     name: secret-scan
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    # The action lists the PR's commits through the API on pull_request
+    # events, which is a read of the pull request, not of the repo contents.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - name: Checkout (full history)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Gitleaks scans every commit, not just the checked-out tree, so a
-          # secret that was committed and later deleted is still caught.
+          # Gitleaks scans the diffs of every commit in the push/PR range, not
+          # just the checked-out tree, so a secret committed and later deleted
+          # in the same PR is still caught. fetch-depth: 0 makes the parent
+          # commits of that range available.
           fetch-depth: 0
 
       # No GITLEAKS_LICENSE: the action documents it as required for
@@ -156,7 +165,14 @@ jobs:
           fi
           echo "no package manager in runtime image"
           docker image ls "$IMAGE_TAG"
-          docker rm -f smoke
+          # Graceful shutdown: tini forwards SIGTERM to node, so `docker stop`
+          # returns well inside the 10 s grace period and the exit code is
+          # 143 (128 + SIGTERM), not 137 (SIGKILL after the grace period).
+          docker stop -t 5 smoke
+          code="$(docker inspect --format '{{.State.ExitCode}}' smoke)"
+          echo "exit code after docker stop: $code"
+          test "$code" = 143
+          docker rm smoke
 
       # The image is scanned as built: OS packages plus /app/node_modules.
       - name: Trivy image scan
