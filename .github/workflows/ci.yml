@@ -1,0 +1,185 @@
+# CI for the Macky Merch API.
+#
+# Every `uses:` is pinned to a full commit SHA (with the release tag in a
+# comment) so a moved tag can never change what runs here. Jobs are named to
+# read well on the PR checks list; they are the required checks for main.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Least privilege: nothing here needs to write to the repo. Gitleaks PR
+# comments are disabled below so no job needs pull-requests: write.
+permissions:
+  contents: read
+
+# A newer push to the same branch/PR cancels the run it supersedes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_TAG: macky-merch-api:ci
+  TRIVY_VERSION: v0.74.0
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+          cache: npm
+
+      # `npm ci` is the reproducible form of `npm install`: it installs exactly
+      # what package-lock.json says and fails if the lockfile and package.json
+      # disagree, instead of silently rewriting the lockfile.
+      - name: Install dependencies (npm ci)
+        run: npm ci
+
+      - name: Run tests
+        run: npm test -- --ci
+
+  lint-dockerfile:
+    name: lint-dockerfile
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: hadolint
+        uses: hadolint/hadolint-action@06be81baf89a55ffd0e24b8f04a4185738dd3387 # v3.5.0
+        with:
+          dockerfile: Dockerfile
+          failure-threshold: info
+
+  dependency-scan:
+    name: dependency-scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Trivy reads package-lock.json and fails on any fixable HIGH/CRITICAL.
+      - name: Trivy filesystem scan (package-lock.json)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+          version: ${{ env.TRIVY_VERSION }}
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      # Independent second opinion from npm's own advisory database.
+      - name: npm audit (high and above)
+        run: npm audit --audit-level=high
+
+  secret-scan:
+    name: secret-scan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Gitleaks scans every commit, not just the checked-out tree, so a
+          # secret that was committed and later deleted is still caught.
+          fetch-depth: 0
+
+      # No GITLEAKS_LICENSE: the action documents it as required for
+      # organization repos only; this is a personal-account repository.
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_ENABLE_COMMENTS: "false"
+
+  docker:
+    name: docker
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ${{ env.IMAGE_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test the container
+        run: |
+          set -euo pipefail
+          docker run -d --name smoke -p 3000:3000 "$IMAGE_TAG"
+          ok=0
+          for _ in $(seq 1 20); do
+            if curl -fsS http://localhost:3000/health; then ok=1; echo; break; fi
+            sleep 1
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "::error::/health never returned 200"; docker logs smoke; exit 1
+          fi
+          who="$(docker exec smoke whoami)"
+          echo "container runs as: $who"
+          test "$who" = "node"
+          if docker exec smoke sh -c 'command -v npm || command -v npx || command -v yarn'; then
+            echo "::error::package manager found in runtime image"; exit 1
+          fi
+          echo "no package manager in runtime image"
+          docker image ls "$IMAGE_TAG"
+          docker rm -f smoke
+
+      # The image is scanned as built: OS packages plus /app/node_modules.
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.IMAGE_TAG }}
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+          version: ${{ env.TRIVY_VERSION }}
+
+      - name: Validate docker-compose.yml
+        run: docker compose config -q
+
+      # Reuses the image built above (IMAGE_TAG), so nothing is rebuilt.
+      - name: Compose smoke test (api + redis)
+        run: |
+          set -euo pipefail
+          docker compose up -d --wait --wait-timeout 90
+          docker compose ps
+          curl -fsS http://localhost:3000/health; echo
+          docker compose exec -T api sh -c 'getent hosts redis'
+          docker compose down -v
