@@ -1,0 +1,28 @@
+# Dependabot keeps the pins in this repo fresh by opening PRs that must pass
+# the same CI as any other change. One entry per ecosystem, because GitHub
+# treats a Dockerfile and a compose file as different ecosystems:
+#   - docker:         the exact node:24.x.y-alpine3.z tag in the Dockerfile
+#   - docker-compose: the exact redis tag in docker-compose.yml
+#   - npm:            package.json / package-lock.json
+#   - github-actions: the commit-SHA pins in .github/workflows (Dependabot
+#                     updates the SHA and the "# vX.Y.Z" comment together)
+# Not covered: the apk package versions inside the Dockerfile (OpenSSL floor,
+# tini pin); those are checked by `trivy image` on every run instead.
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
