@@ -1,0 +1,39 @@
+# Dependencies are installed inside the image from the lockfile.
+node_modules
+npm-debug.log*
+*.log
+
+# Version control and CI configuration never belong in the image.
+.git
+.gitignore
+.gitattributes
+.github
+
+# Docker files themselves are read by the builder, not copied into the image.
+Dockerfile
+.dockerignore
+docker-compose.yml
+compose.yaml
+.hadolint.yaml
+
+# Documentation and local notes.
+README.md
+*.md
+LICENSE
+docs
+
+# Tests and coverage are not needed at runtime.
+server.test.js
+*.test.js
+coverage
+jest.config.*
+
+# Secrets and local environment files.
+.env
+.env.*
+
+# Editor and OS clutter.
+.vscode
+.idea
+.DS_Store
+*.swp
