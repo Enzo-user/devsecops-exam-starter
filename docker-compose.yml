@@ -1,0 +1,69 @@
+# Local stack: the API plus a "dummy" Redis container on a private network.
+# server.js does not talk to Redis yet; REDIS_URL is wired so the app can
+# reach it by hostname the moment it needs a cache or store.
+#
+#   docker compose up -d --wait     # build, start, block until both are healthy
+#   curl http://localhost:3000/health
+#   docker compose down -v          # stop and remove the redis volume
+
+name: macky-merch
+
+services:
+  api:
+    build:
+      context: .
+    # IMAGE_TAG lets CI reuse the image it already built and scanned
+    # instead of building a second copy; locally it defaults to :local.
+    image: ${IMAGE_TAG:-macky-merch-api:local}
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: "3000"
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    # Hardening: the app never writes to disk, so the root filesystem is
+    # read-only (tmpfs for /tmp), no capabilities, no privilege escalation.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      # Same node-only probe as the Dockerfile, polled faster so --wait
+      # returns quickly.
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - backend
+
+  redis:
+    # Pinned to the exact tag behind redis:7.4-alpine on 2026-09-16
+    # (index digest sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf).
+    image: redis:7.4.11-alpine3.21
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+    # No `ports:` on purpose: Redis is reachable only from the backend network.
+    networks:
+      - backend
+
+volumes:
+  redis-data:
+
+networks:
+  backend:
+    driver: bridge
