@@ -83,7 +83,7 @@ The versions are the ones the pipeline pins; the flags are the ones the pipeline
 | Dockerfile lint | `hadolint Dockerfile` (2.15.1) |
 | Lockfile vulnerabilities | `trivy fs --scanners vuln --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 .` (0.74.0) |
 | npm advisories | `npm audit --audit-level=high` |
-| Secrets in history | `gitleaks git --redact --exit-code 1 .` (8.30.1) |
+| Secrets in history | `gitleaks git --redact --exit-code 1 --log-opts=main .` (8.30.1); drop `--log-opts` to sweep every local branch, which on a clone that has `demo/leaked-secret` will report the planted key |
 | Image vulnerabilities | `trivy image --scanners vuln --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 macky-merch-api:local` |
 | Workflow syntax | `actionlint .github/workflows/ci.yml` (1.7.12) |
 | Compose file | `docker compose config -q` |
@@ -112,7 +112,7 @@ Four jobs run in parallel; `docker` waits for `test` because building an image w
 
 **dependency-scan** — `trivy fs` over the repo (lockfile), `--scanners vuln`, severity `CRITICAL,HIGH`, `--ignore-unfixed`, `--exit-code 1`; then `npm audit --audit-level=high` as an independent second opinion from npm's own advisory database. Either one failing fails the job. It exists so a dependency with a known, fixable high-severity CVE cannot be merged; it is the job the `demo/vulnerable-dependency` branch breaks.
 
-**secret-scan** — checkout with `fetch-depth: 0` so the whole history is present, then `gitleaks/gitleaks-action`, which runs `gitleaks` over every commit, not just the working tree. A secret that was committed and then deleted in a later commit is still a leak; scanning history is the only way to catch that. The action needs no `GITLEAKS_LICENSE` on a personal-account repo (its README says so explicitly), and I disabled PR comments so the job runs with `contents: read` only. It is the job the `demo/leaked-secret` branch breaks.
+**secret-scan** — checkout with `fetch-depth: 0`, then `gitleaks/gitleaks-action`. I read the action's source at the pinned commit rather than assume: on a `push` it runs `gitleaks git --log-opts="--no-merges --first-parent <first>^..<last>"` over exactly the pushed commits, and on a `pull_request` over the PR's commits; `fetch-depth: 0` is what makes those parent commits available. It scans commit diffs, not the working tree, so a secret added in one commit and deleted in a later commit of the same PR is still reported. It does not re-sweep the entire history on every run (the action does that only for `workflow_dispatch`/`schedule`); the full sweep is the local `gitleaks git` command in the table above, which I ran on `main`'s history before every push. The action needs no `GITLEAKS_LICENSE` on a personal-account repo (its README says so explicitly), and I disabled PR comments so the job runs with `contents: read` only. It is the job the `demo/leaked-secret` branch breaks.
 
 **docker** — `docker/setup-buildx-action`, then `docker/build-push-action` with `push: false`, `load: true`, tag `macky-merch-api:ci` and the GitHub Actions layer cache. The built image is then actually run: the step waits for `/health` to return 200, asserts `docker exec … whoami` prints `node`, asserts no `npm`/`npx`/`yarn` binary exists in the image, and prints the image size. Then `trivy image` scans the image as built (Alpine packages plus `/app/node_modules`) with the same HIGH/CRITICAL, fixed-only, exit-1 policy. Finally `docker compose config -q` validates the compose file and `docker compose up -d --wait` brings up api + redis (reusing the image just built via `IMAGE_TAG`), curls `/health`, resolves `redis` from inside the api container and tears everything down. It exists so "the Dockerfile builds" also means "the container starts, answers, runs unprivileged and is clean".
 
@@ -124,7 +124,7 @@ Global settings: `permissions: contents: read` at the top (nothing here writes t
 
 **Why Node 24.** Node 24 "Krypton" is the current Active LTS (LTS since October 2025, maintenance from October 2026, end-of-life April 2028). Node 22 is already in maintenance (EOL April 2027) and Node 20 reaches EOL in April 2026, so both would need a migration during the life of this project. Nothing in the app depends on a Node version; `/health` runs the same on all three.
 
-**Why Alpine over Debian slim or `node:latest`.** `node:latest` is whatever the maintainers pushed last: a rebuild tomorrow can change the Node major version, and there is no way to say what I tested. Between Alpine and `bookworm-slim`, Alpine 3.24 ships 18 packages in the base layer versus  for `node:24-bookworm-slim` (counted with `apk info` and `dpkg -l`); fewer packages means fewer CVEs to track and a smaller pull. The known Alpine trade-off is musl instead of glibc, which matters for native addons; this app has none (`npm ci` runs with `--ignore-scripts` and nothing is compiled), so I take the smaller surface.
+**Why Alpine over Debian slim or `node:latest`.** `node:latest` is whatever the maintainers pushed last: a rebuild tomorrow can change the Node major version, and there is no way to say what I tested. Between Alpine and `bookworm-slim`, Alpine 3.24 ships 18 packages in the base layer versus 88 for `node:24-bookworm-slim` (counted with `apk info` and `dpkg -l`); fewer packages means fewer CVEs to track and a smaller pull. The known Alpine trade-off is musl instead of glibc, which matters for native addons; this app has none (`npm ci` runs with `--ignore-scripts` and nothing is compiled), so I take the smaller surface.
 
 **Why the exact tag plus a recorded digest.** `24-alpine` moves every time Node or Alpine publishes a patch. `24.21.0-alpine3.24` is the exact tag behind it today, and the Dockerfile records the index digest (`sha256:be80f76c…`) in a comment. Pinning with `@sha256:` in `FROM` would be the strongest form, but it makes the Dockerfile unreadable for humans and Dependabot, and a digest pin also freezes *security* patches, so the honest position is: pin the exact tag, record the digest so anyone can verify it (`docker buildx imagetools inspect node:24.21.0-alpine3.24`), and bump the tag deliberately. The right way to keep it fresh is Dependabot's `docker` ecosystem opening a PR whenever a new `24.x.y-alpine3.z` appears; the PR then has to pass this same pipeline.
 
@@ -199,7 +199,7 @@ To be clear: `server.js` never opens a Redis connection. The bonus asks for a "d
 
 **`npm audit --audit-level=high`** is a second opinion from a different advisory source (GitHub Advisory Database via npm) that costs one command. Two databases disagree at the edges; the lodash demo below shows npm reporting six advisories where Trivy reports four CVEs, which is exactly why both run.
 
-**gitleaks** (`gitleaks/gitleaks-action` v3, gitleaks 8.30.1) scans every commit in the history for credential shapes (AWS, GitHub, Stripe, generic high-entropy keys, …). I chose it over TruffleHog or GitGuardian because it runs entirely inside the job (no data leaves the runner), needs no account or license for a personal repo, and has a CLI that behaves identically locally.
+**gitleaks** (`gitleaks/gitleaks-action` v3, gitleaks 8.30.1) scans commit diffs (the pushed or PR commits in CI, the whole history locally) for credential shapes: AWS, GitHub, Stripe, generic high-entropy keys and so on. I chose it over TruffleHog or GitGuardian because it runs entirely inside the job (no data leaves the runner), needs no account or license for a personal repo, and has a CLI that behaves identically locally.
 
 **hadolint** lints the Dockerfile for practices that a green build cannot verify (pinned packages, no `latest`, numeric user, no `apk upgrade`).
 
@@ -254,13 +254,13 @@ Secret:      REDACTED
 RuleID:      aws-access-token
 Entropy:     3.508695
 File:        config/payments.js
-Line:        …
+Line:        15
 Commit:      <commit on demo/leaked-secret>
 leaks found: 1
 exit code 1
 ```
 
-`gitleaks` scans commits, so the leak is reported even if a later commit deleted the file; the only real fix is to rotate the credential and rewrite history.
+`gitleaks` scans commit diffs, so the leak is still reported if a later commit on the branch deletes the file; the only real fix is to rotate the credential and rewrite history.
 
 <!-- PR-LINK: leaked-secret -->
 
