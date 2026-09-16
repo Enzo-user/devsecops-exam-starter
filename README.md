@@ -261,7 +261,7 @@ Because `lodash` is a production dependency it is also copied into the image, so
 The one change is a new file `config/payments.js` exporting an AWS-access-key-shaped string, `AKIAFAKE…KEYX` (the full value is in the branch, not here, so `main`'s history stays clean). It contains the words FAKE, LSCS and DEMO, is not associated with any account, and the file's header comment says exactly what it is. Locally:
 
 ```
-$ gitleaks git --redact --exit-code 1 --log-opts=main..demo/leaked-secret .
+$ gitleaks git --redact --exit-code 1 -v --log-opts=main..demo/leaked-secret .   # -v prints the finding
 
 Finding:     paymentsApiKey: 'REDACTED',
 Secret:      REDACTED
