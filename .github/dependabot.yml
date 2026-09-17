@@ -6,8 +6,8 @@
 #   - npm:            package.json / package-lock.json
 #   - github-actions: the commit-SHA pins in .github/workflows (Dependabot
 #                     updates the SHA and the "# vX.Y.Z" comment together)
-# Not covered: the apk package versions inside the Dockerfile (OpenSSL floor,
-# tini pin); those are checked by `trivy image` on every run instead.
+# Not covered: the apk package version floors inside the Dockerfile (OpenSSL,
+# tini); those are checked by `trivy image` on every run instead.
 version: 2
 updates:
   - package-ecosystem: docker
