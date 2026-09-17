@@ -11,6 +11,7 @@ Every claim below comes with the command that produced it; the fenced blocks are
 
 ## Contents
 
+- [How to evaluate this submission](#how-to-evaluate-this-submission)
 - [Quick start](#quick-start)
 - [Pipeline overview](#pipeline-overview)
 - [Architecture decisions](#architecture-decisions)
@@ -19,6 +20,27 @@ Every claim below comes with the command that produced it; the fenced blocks are
 - [Branch protection](#branch-protection)
 - [Challenges faced](#challenges-faced)
 - [Submission checklist](#submission-checklist)
+
+## How to evaluate this submission
+
+A ten-minute path through the exam checklist, in order. The commands work as written on Linux, macOS and Windows with Docker Desktop (in Windows PowerShell type `curl.exe` instead of `curl`, because there `curl` is an alias for `Invoke-WebRequest`). Expected outputs and the reasoning are in [Quick start](#quick-start) and the sections it links to.
+
+1. **Fork.** This repository is a fork of `dlsu-lscs/devsecops-exam-starter` (GitHub shows "forked from" under the repository name). `server.js` and `server.test.js` are the starter's, unchanged.
+2. **Dockerfile builds, multi-stage, `.dockerignore`.** `git clone https://github.com/Enzo-user/devsecops-exam-starter.git`, `cd devsecops-exam-starter`, then `docker build -t macky-merch-api:local .`. The build output shows the two stages (`deps`, `runtime`) and a build context of about 171 kB (the `.dockerignore` at work).
+3. **The container runs.** `docker run -d --name api -p 3000:3000 macky-merch-api:local`, then `curl -si http://localhost:3000/health`. Expected: `HTTP/1.1 200 OK` and the body `{"status":"OK","message":"Macky Merch API is running smoothly."}`.
+4. **Non-root, and a clean stop.** `docker exec api whoami` prints `node`. `docker exec api ps -o pid,user,args` shows `/sbin/tini` as PID 1 and `node server.js` as its child, both as `node`. `docker stop api` returns in well under a second and `docker inspect --format '{{.State.ExitCode}}' api` prints `143` (SIGTERM was delivered, not SIGKILL). Then `docker rm api`.
+5. **Compose with a dummy database (bonus).** `docker compose up -d --wait`, `curl http://localhost:3000/health`, `docker compose down -v`. `docker compose ps` in between shows `api` and `redis` both `(healthy)`; Redis has no host port and is reachable only on the `backend` network.
+6. **The pipeline.** [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on `push` to `main` and on every `pull_request` targeting `main`. Its five jobs, one line each: `test` (checkout, setup-node 24, `npm ci`, `npm test`); `lint-dockerfile` (hadolint); `dependency-scan` (Trivy over the lockfile, then `npm audit`); `secret-scan` (gitleaks over the pushed or PR commits); `docker` (buildx build, run and smoke-test the container, Trivy on the built image, compose smoke test). Runs are in the [Actions tab](https://github.com/Enzo-user/devsecops-exam-starter/actions); the latest run on `main` is green.
+7. **The scanners catching the planted problems.** [PR #1](https://github.com/Enzo-user/devsecops-exam-starter/pull/1) plants `lodash@4.17.15`: on its checks list `dependency-scan` and `docker` are red, the other three green, and the merge box says merging is blocked. [PR #2](https://github.com/Enzo-user/devsecops-exam-starter/pull/2) plants a fake AWS key: only `secret-scan` is red, same blocked merge box. Click a red check to see the Trivy table or the gitleaks finding in the log; the excerpts, screenshots and the commands to reproduce both locally are in [Vulnerability demonstration](#vulnerability-demonstration).
+8. **Branch protection (bonus).** Repository **Settings → Rules → Rulesets → `protect-main`** (that page is visible to collaborators only), or from anywhere, no token needed:
+   ```sh
+   gh api repos/Enzo-user/devsecops-exam-starter/rules/branches/main --jq '[.[] | .type] | join(", ")'
+   # deletion, non_fast_forward, pull_request, required_status_checks
+   gh pr view 1 -R Enzo-user/devsecops-exam-starter --json mergeStateStatus --jq .mergeStateStatus
+   # BLOCKED
+   ```
+   (`curl https://api.github.com/repos/Enzo-user/devsecops-exam-starter/rules/branches/main` returns the same rules without `gh`.) The five required checks are listed in [Branch protection](#branch-protection).
+9. **Documentation.** Local setup: [Quick start](#quick-start). Base image rationale: [Base image](#base-image-node24210-alpine324). Scanner rationale: [Security scanning](#security-scanning). Vulnerability demonstration with screenshots: [Vulnerability demonstration](#vulnerability-demonstration). Challenges: [Challenges faced](#challenges-faced). Multi-stage build and compose: [Multi-stage layout](#multi-stage-layout-and-why-the-runtime-stage-deletes-npm) and [`docker-compose.yml`](#docker-composeyml).
 
 ## Quick start
 
