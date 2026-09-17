@@ -41,12 +41,17 @@ ENV NODE_ENV=production
 #    kernel ignores default-action signals for PID 1, so without an init
 #    `docker stop` waits the full grace period and SIGKILLs the app. tini
 #    forwards the signal to node (and reaps zombies) so shutdown is prompt.
-#    tini is an exact pin: it is a tool I chose, not a moving security fix.
+#    Same version floor as OpenSSL: Alpine's index only serves the newest
+#    build of a package, so an exact `=0.19.0-rN` pin would break the build
+#    (on any machine, any day) the moment Alpine rebuilds tini. The floor
+#    names the version this image was tested with and still installs if the
+#    suffix moves. Reproducibility comes from the exact base tag; drift in
+#    these three packages is caught by `trivy image` on every run.
 # 3. Remove npm, npx, corepack and yarn: the runtime never needs a package
 #    manager, and the npm bundled with the official image ships HIGH CVEs in
 #    its own dependencies (tar, brace-expansion, ip-address). Deleting them
 #    both shrinks the image and removes the findings instead of ignoring them.
-RUN apk add --no-cache "libcrypto3>=3.5.8-r0" "libssl3>=3.5.8-r0" tini=0.19.0-r3 \
+RUN apk add --no-cache "libcrypto3>=3.5.8-r0" "libssl3>=3.5.8-r0" "tini>=0.19.0" \
     && rm -rf /usr/local/lib/node_modules \
               /usr/local/bin/npm /usr/local/bin/npx \
               /usr/local/bin/corepack \
