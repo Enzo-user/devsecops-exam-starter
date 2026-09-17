@@ -93,10 +93,12 @@ The versions are the ones the pipeline pins; the flags are the ones the pipeline
 | Dockerfile lint | `hadolint Dockerfile` (2.15.1) |
 | Lockfile vulnerabilities | `trivy fs --scanners vuln --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 .` (0.74.0) |
 | npm advisories | `npm audit --audit-level=high` |
-| Secrets in history | `gitleaks git --redact --exit-code 1 --log-opts=main .` (8.30.1); drop `--log-opts` to sweep every local branch, which on a clone that has `demo/leaked-secret` will report the planted key |
+| Secrets in history | `gitleaks git --redact --exit-code 1 --log-opts=main .` (8.30.1) scans `main`'s history and finds nothing; drop `--log-opts` and it sweeps every ref including the remote-tracking `origin/demo/leaked-secret`, so on any clone of this repository it reports the planted key (`17 commits scanned`, `leaks found: 1`), which is the expected result |
 | Image vulnerabilities | `trivy image --scanners vuln --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 macky-merch-api:local` |
 | Workflow syntax | `actionlint .github/workflows/ci.yml` (1.7.12) |
 | Compose file | `docker compose config -q` |
+
+The first `trivy fs` or `trivy image` run downloads Trivy's vulnerability database (a download of tens of MB that unpacks to about 1.4 GB) and prints nothing until it has finished; on this machine with an empty cache that took about two minutes. Every later run takes seconds. The commands above are run from a checkout of `main`; the ones that reproduce the demo findings are in [Vulnerability demonstration](#vulnerability-demonstration).
 
 ## Pipeline overview
 
@@ -223,13 +225,14 @@ To be clear: `server.js` never opens a Redis connection. The bonus asks for a "d
 
 ## Vulnerability demonstration
 
-`main` is green: `trivy fs`, `npm audit`, `gitleaks` and `trivy image` all report nothing. Two branches, each exactly one commit ahead of the final `main` commit, plant exactly one problem each, and each is opened as a PR against `main` so the failing check is visible on the PR itself.
+`main` is green: `trivy fs`, `npm audit`, `gitleaks` and `trivy image` all report nothing. Two branches plant exactly one problem each, and each is opened as a PR against `main` so the failing check is visible on the PR itself. Each branch is a single commit on top of `5ce999d`, the `main` commit that [CI run #1](https://github.com/Enzo-user/devsecops-exam-starter/actions/runs/35180988895) tested; `main` has since gained further commits (this README, and the tini version floor), so `git log origin/demo/leaked-secret..origin/main` is not empty. That is why "require branches to be up to date" is off in the ruleset: the PRs stay `BLOCKED` by their red check instead of flipping to "out of date" (see [Branch protection](#branch-protection)).
 
 ### `demo/vulnerable-dependency` — fails `dependency-scan` (and `docker`)
 
-The one change is `npm install lodash@4.17.15 --save-exact`: `package.json` gains `"lodash": "4.17.15"` and `package-lock.json` gains the resolved entry. `server.js` is not touched. Locally:
+The one change is `npm install lodash@4.17.15 --save-exact`: `package.json` gains `"lodash": "4.17.15"` and `package-lock.json` gains the resolved entry. `server.js` is not touched. Locally, on a fresh clone (the `checkout` creates the local branch from `origin/demo/vulnerable-dependency`; `git checkout main` afterwards to return):
 
 ```
+$ git checkout demo/vulnerable-dependency
 $ trivy fs --scanners vuln --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 .
 
 package-lock.json (npm)
@@ -280,10 +283,10 @@ The `docker` job on the same run builds the image from the branch and its `trivy
 
 ### `demo/leaked-secret` — fails `secret-scan`
 
-The one change is a new file `config/payments.js` exporting an AWS-access-key-shaped string, `AKIAFAKE…KEYX` (the full value is in the branch, not here, so `main`'s history stays clean). It contains the words FAKE, LSCS and DEMO, is not associated with any account, and the file's header comment says exactly what it is. Locally:
+The one change is a new file `config/payments.js` exporting an AWS-access-key-shaped string, `AKIAFAKE…KEYX` (the full value is in the branch, not here, so `main`'s history stays clean). It contains the words FAKE, LSCS and DEMO, is not associated with any account, and the file's header comment says exactly what it is. Locally, from any checkout (the range uses the remote-tracking refs a fresh clone already has, so nothing needs to be checked out):
 
 ```
-$ gitleaks git --redact --exit-code 1 -v --log-opts=main..demo/leaked-secret .   # -v prints the finding
+$ gitleaks git --redact --exit-code 1 -v --log-opts=origin/main..origin/demo/leaked-secret .   # -v prints the finding
 
 Finding:     paymentsApiKey: 'REDACTED',
 Secret:      REDACTED
