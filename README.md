@@ -225,11 +225,11 @@ $ docker build --no-cache --progress=plain -f Dockerfile.wide . 2>&1 | grep 'tra
 #4 transferring context: 171.87kB done          # .dockerignore in place
 $ mv .dockerignore ../di && docker builder prune -af
 $ docker build --no-cache --progress=plain -f Dockerfile.wide . 2>&1 | grep 'transferring context'
-#6 transferring context: 29.40MB 0.5s done      # .dockerignore gone
+#6 transferring context: 29.72MB 0.5s done      # .dockerignore gone
 $ mv ../di .dockerignore && rm Dockerfile.wide
 ```
 
-171 kB against 29.4 MB, a factor of about 170 — and nearly all of that 29.4 MB is the two things that must never reach a layer: a `node_modules` built for macOS arm64, and `.git`, which in this repository carries the demo branch with the planted key. The rules that matter most (`node_modules`, `.git`, `.env*`) are the ones whose cost only shows up after the mistake, which is why they are written down before it.
+171 kB against roughly 30 MB, a factor of about 170 — and nearly all of those 30 MB is the two things that must never reach a layer: a `node_modules` built for macOS arm64, and `.git`, which in this repository carries the demo branch with the planted key. Your second figure will not match mine to the byte and should not: it is the size of *your* `node_modules` and `.git`, and `.git` grows with every commit (I measured 29.40 MB in one run and 29.72 MB a few commits later). The ratio is the point. The rules that matter most (`node_modules`, `.git`, `.env*`) are the ones whose cost only shows up after the mistake, which is why they are written down before it.
 
 ### `HEALTHCHECK`
 
