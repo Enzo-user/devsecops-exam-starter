@@ -26,7 +26,7 @@ Every claim below comes with the command that produced it; the fenced blocks are
 A ten-minute path through the exam checklist, in order. The commands work as written on Linux, macOS and Windows with Docker Desktop (in Windows PowerShell type `curl.exe` instead of `curl`, because there `curl` is an alias for `Invoke-WebRequest`). Expected outputs and the reasoning are in [Quick start](#quick-start) and the sections it links to.
 
 1. **Fork.** This repository is a fork of `dlsu-lscs/devsecops-exam-starter` (GitHub shows "forked from" under the repository name). `server.js` and `server.test.js` are the starter's, unchanged.
-2. **Dockerfile builds, multi-stage, `.dockerignore`.** `git clone https://github.com/Enzo-user/devsecops-exam-starter.git`, `cd devsecops-exam-starter`, then `docker build -t macky-merch-api:local .`. The build output shows the two stages (`deps`, `runtime`) and a build context of about 171 kB (the `.dockerignore` at work).
+2. **Dockerfile builds, multi-stage, `.dockerignore`.** `git clone https://github.com/Enzo-user/devsecops-exam-starter.git`, `cd devsecops-exam-starter`, then `docker build -t macky-merch-api:local .`. The build output shows the two stages (`deps`, `runtime`) and a build context of about 171 kB — the lockfile plus two small files, because every `COPY` here names exact paths and BuildKit sends only what a `COPY` asks for. What `.dockerignore` is actually for, with a measurement, is in [`.dockerignore`](#dockerignore).
 3. **The container runs.** `docker run -d --name api -p 3000:3000 macky-merch-api:local`, then `curl -si http://localhost:3000/health`. Expected: `HTTP/1.1 200 OK` and the body `{"status":"OK","message":"Macky Merch API is running smoothly."}`.
 4. **Non-root, and a clean stop.** `docker exec api whoami` prints `node`. `docker exec api ps -o pid,user,args` shows `/sbin/tini` as PID 1 and `node server.js` as its child, both as `node`. `docker stop api` returns in well under a second and `docker inspect --format '{{.State.ExitCode}}' api` prints `143` (SIGTERM was delivered, not SIGKILL). Then `docker rm api`.
 5. **Compose with a dummy database (bonus).** `docker compose up -d --wait`, `curl http://localhost:3000/health`, `docker compose down -v`. `docker compose ps` in between shows `api` and `redis` both `(healthy)`; Redis has no host port and is reachable only on the `backend` network.
@@ -117,7 +117,7 @@ The versions are the ones the pipeline pins; the flags are the ones the pipeline
 | Dockerfile lint | `hadolint Dockerfile` (2.15.1) |
 | Lockfile vulnerabilities | `trivy fs --scanners vuln --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 .` (0.74.0) |
 | npm advisories | `npm audit --audit-level=high` |
-| Secrets in history | `gitleaks git --redact --exit-code 1 --log-opts=main .` (8.30.1) scans `main`'s history and finds nothing; drop `--log-opts` and it sweeps every ref including the remote-tracking `origin/demo/leaked-secret`, so on any clone of this repository it reports the planted key (`17 commits scanned`, `leaks found: 1`), which is the expected result |
+| Secrets in history | `gitleaks git --redact --exit-code 1 --log-opts=main .` (8.30.1) scans `main`'s history and finds nothing; drop `--log-opts` and it sweeps every ref including the remote-tracking `origin/demo/leaked-secret`, so on any clone of this repository it reports the planted key — `leaks found: 1`, which is the expected result. The commit count it prints alongside covers every ref, so it grows as `main` grows (`21 commits scanned` on 17 Sep 2026); the number to check is `leaks found: 1` |
 | Image vulnerabilities | `trivy image --scanners vuln --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 macky-merch-api:local` |
 | Workflow syntax | `actionlint .github/workflows/ci.yml` (1.7.12) |
 | Compose file | `docker compose config -q` |
@@ -197,7 +197,7 @@ app/node_modules/**/package.json        node-pkg   0   (68 packages)
 app/package.json                        node-pkg   0
 ```
 
-Removing npm fixes the four `node-pkg` findings by removing the vulnerable code rather than adding them to an ignore list, and the `apk add` floor fixes the two OS findings. One honest caveat on size: the deletion happens in a new layer on top of the base, so the files are gone from the final filesystem (which is what Trivy and an attacker see) but the base layer that contains them still has to be pulled. The image is 62.5 MB versus about 59 MB for the bare base (`docker image inspect --format '{{.Size}}'`: 62,505,146 and 59,026,045 bytes; `docker image ls` rounds its content-size column slightly differently). `docker history` shows what was added: a 6.05 MB layer for the patched OpenSSL plus tini, 4.67 MB of `node_modules` and 16 kB of app code. Shrinking below the base would mean copying the `node` binary into a bare `alpine` image and creating the user by hand; I judged that not worth losing the official image's maintained `node` user and its tested Node build for a 60 MB image.
+Removing npm fixes the four `node-pkg` findings by removing the vulnerable code rather than adding them to an ignore list, and the `apk add` floor fixes the two OS findings. One honest caveat on size: the deletion happens in a new layer on top of the base, so the files are gone from the final filesystem (which is what Trivy and an attacker see) but the base layer that contains them still has to be pulled. The image is 62.5 MB versus 59.0 MB for the bare base (`docker image inspect --format '{{.Size}}'`; `docker image ls` rounds its content-size column slightly differently). The base figure is byte-exact everywhere because that image is pulled, not built: 59,026,045. The app image is not, and I stopped quoting it to the byte after checking: `apk add` writes its own package database, so two builds of this same Dockerfile on this same machine, hours apart, gave me 62,505,146 and 62,505,099 bytes. A few dozen bytes of drift, but enough that an exact number would be a claim a grader could not reproduce. 62.5 MB is the figure that holds. `docker history` shows what was added: a 6.05 MB layer for the patched OpenSSL plus tini, 4.67 MB of `node_modules` and 16 kB of app code. Shrinking below the base would mean copying the `node` binary into a bare `alpine` image and creating the user by hand; I judged that not worth losing the official image's maintained `node` user and its tested Node build for a 60 MB image.
 
 ### Non-root user, and files the process cannot modify
 
@@ -213,7 +213,23 @@ Manifests are copied and installed before the source code, so editing `server.js
 
 ### `.dockerignore`
 
-It excludes `node_modules` (installed inside the image from the lockfile, so the host copy, possibly built for a different OS, must never be sent), `.git`, `.github`, the Docker and compose files themselves, docs, tests, coverage, `.env*` and editor clutter. `docker build --progress=plain` shows the result: `transferring context: 171.78kB`, about 171 kB, which is `package-lock.json` (170,776 bytes) plus two small files.
+It excludes `node_modules` (installed inside the image from the lockfile, so the host copy, possibly built for a different OS, must never be sent), `.git`, `.github`, the Docker and compose files themselves, docs, tests, coverage, `.env*` and editor clutter.
+
+**It is not what makes today's build context small, and I checked rather than assumed.** `docker build --progress=plain` on this repository prints `transferring context: 171.78kB` — `package-lock.json` (170,776 bytes) plus two small files. That figure comes from the `COPY` instructions, not from this file: BuildKit sends only the paths a `COPY` actually names, and both `COPY`s here are narrow (`COPY package.json package-lock.json ./`, `COPY package.json server.js ./`). Delete `.dockerignore`, leave a 41 MB host `node_modules` in place, `docker builder prune -af`, rebuild with `--no-cache`, and the line still reads `171.78kB`. So "the `.dockerignore` keeps the context to 171 kB" would have been a nice sentence and a false one.
+
+**What it is for is the build where a `COPY` is wide**, which is one careless edit, one `COPY . .` from a tutorial, or one extra service in the compose file away. Same clone, after `npm ci`, with a throwaway one-line Dockerfile:
+
+```sh
+$ printf 'FROM alpine:3.24\nWORKDIR /app\nCOPY . .\n' > Dockerfile.wide
+$ docker build --no-cache --progress=plain -f Dockerfile.wide . 2>&1 | grep 'transferring context'
+#4 transferring context: 171.87kB done          # .dockerignore in place
+$ mv .dockerignore ../di && docker builder prune -af
+$ docker build --no-cache --progress=plain -f Dockerfile.wide . 2>&1 | grep 'transferring context'
+#6 transferring context: 29.40MB 0.5s done      # .dockerignore gone
+$ mv ../di .dockerignore && rm Dockerfile.wide
+```
+
+171 kB against 29.4 MB, a factor of about 170 — and nearly all of that 29.4 MB is the two things that must never reach a layer: a `node_modules` built for macOS arm64, and `.git`, which in this repository carries the demo branch with the planted key. The rules that matter most (`node_modules`, `.git`, `.env*`) are the ones whose cost only shows up after the mistake, which is why they are written down before it.
 
 ### `HEALTHCHECK`
 
@@ -348,7 +364,7 @@ WRN leaks found: 1
 
 The local blocks above are trimmed excerpts (columns and log noise removed) captured from the same commands on my machine; the "In CI" blocks and screenshots are taken from the linked runs.
 
-For comparison, the same workflow on `main` at the final commit: [CI run #1](https://github.com/Enzo-user/devsecops-exam-starter/actions/runs/35180988895), all five jobs green. Its `docker` job log shows the smoke-test assertions from the [Pipeline overview](#pipeline-overview) passing on the runner: `whoami` prints `node`, `no package manager in runtime image`, `exit code after docker stop: 143`, and the compose stack comes up with both containers `(healthy)`.
+For comparison, the same workflow on `main` at commit `5ce999d` — the commit both demo branches sit on: [CI run #1](https://github.com/Enzo-user/devsecops-exam-starter/actions/runs/35180988895), all five jobs green. (`main` has gained commits since, each with its own green run; the [Actions tab filtered to `main`](https://github.com/Enzo-user/devsecops-exam-starter/actions?query=branch%3Amain) always shows the newest.) Its `docker` job log shows the smoke-test assertions from the [Pipeline overview](#pipeline-overview) passing on the runner: `whoami` prints `node`, `no package manager in runtime image`, `exit code after docker stop: 143`, and the compose stack comes up with both containers `(healthy)`.
 
 ![main run: all five jobs green](docs/screenshots/main-run-green.png)
 
@@ -400,7 +416,7 @@ The rule applies to me as well: this section reached `main` through [PR #3](http
 |---|---|
 | Starter repo forked | this repository (`origin` = my fork, `upstream` = `dlsu-lscs/devsecops-exam-starter`) |
 | Dockerfile runs as non-root | `Dockerfile` (`USER 1000:1000`); the `docker` job asserts `docker exec … whoami` prints `node` |
-| `.dockerignore` present | `.dockerignore`; context transfer is about 171 kB |
+| `.dockerignore` present | `.dockerignore`; excludes `node_modules`, `.git`, `.env*`, tests and docs — measured against a wide `COPY` in [`.dockerignore`](#dockerignore) |
 | `ci.yml` runs tests and builds the image | `.github/workflows/ci.yml` jobs `test` and `docker` |
 | Security scanner in the workflow | `dependency-scan` (Trivy fs + npm audit), `secret-scan` (gitleaks), `docker` (Trivy image), `lint-dockerfile` (hadolint) |
 | Deliberate vulnerability, documented | branches `demo/vulnerable-dependency` and `demo/leaked-secret`, section [Vulnerability demonstration](#vulnerability-demonstration) |
