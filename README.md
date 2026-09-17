@@ -27,7 +27,7 @@ Every claim below comes with the command that produced it; the fenced blocks are
 ```sh
 docker build -t macky-merch-api:local .
 docker run -d --name api -p 3000:3000 macky-merch-api:local
-curl -si http://localhost:3000/health
+curl -si http://localhost:3000/health   # Windows PowerShell: curl.exe -si …
 ```
 
 Expected response:
@@ -57,9 +57,11 @@ PID   USER     COMMAND
     7 node     {MainThread} node server.js
 $ docker inspect --format '{{.State.Health.Status}}' api
 healthy
-$ /usr/bin/time -p docker stop api      # SIGTERM reaches node: well under 1 s
+$ time docker stop api                  # SIGTERM reaches node: well under 1 s
 api
-real 0.09
+real    0m0.112s
+user    0m0.018s
+sys     0m0.011s
 $ docker inspect --format '{{.State.ExitCode}}' api
 143
 $ docker rm api
@@ -173,7 +175,7 @@ app/node_modules/**/package.json        node-pkg   0   (68 packages)
 app/package.json                        node-pkg   0
 ```
 
-Removing npm fixes the four `node-pkg` findings by removing the vulnerable code rather than adding them to an ignore list, and the `apk add` floor fixes the two OS findings. One honest caveat on size: the deletion happens in a new layer on top of the base, so the files are gone from the final filesystem (which is what Trivy and an attacker see) but the base layer that contains them still has to be pulled. The image is 62.5 MB versus 59.0 MB for the bare base (+6 MB for the patched OpenSSL plus tini layer, +4.7 MB `node_modules`, 16 kB of app code). Shrinking below the base would mean copying the `node` binary into a bare `alpine` image and creating the user by hand; I judged that not worth losing the official image's maintained `node` user and its tested Node build for a 60 MB image.
+Removing npm fixes the four `node-pkg` findings by removing the vulnerable code rather than adding them to an ignore list, and the `apk add` floor fixes the two OS findings. One honest caveat on size: the deletion happens in a new layer on top of the base, so the files are gone from the final filesystem (which is what Trivy and an attacker see) but the base layer that contains them still has to be pulled. The image is 62.5 MB versus about 59 MB for the bare base (`docker image inspect --format '{{.Size}}'`: 62,505,146 and 59,026,045 bytes; `docker image ls` rounds its content-size column slightly differently). `docker history` shows what was added: a 6.05 MB layer for the patched OpenSSL plus tini, 4.67 MB of `node_modules` and 16 kB of app code. Shrinking below the base would mean copying the `node` binary into a bare `alpine` image and creating the user by hand; I judged that not worth losing the official image's maintained `node` user and its tested Node build for a 60 MB image.
 
 ### Non-root user, and files the process cannot modify
 
