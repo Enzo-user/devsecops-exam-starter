@@ -254,7 +254,29 @@ exit code 1
 
 Because `lodash` is a production dependency it is also copied into the image, so `trivy image` on an image built from this branch reports the same CVEs under `app/node_modules/lodash/package.json` and the `docker` job fails too.
 
-<!-- PR-LINK: vulnerable-dependency -->
+**In CI.** The branch is open as [PR #1](https://github.com/Enzo-user/devsecops-exam-starter/pull/1); its workflow run is [CI run #2](https://github.com/Enzo-user/devsecops-exam-starter/actions/runs/35181029245). `dependency-scan` fails at the Trivy step and `docker` fails at the image scan; `test`, `lint-dockerfile` and `secret-scan` stay green. (The `npm audit` step never runs on this branch: the job stops at the first failing step, which is Trivy. Locally it fails on the same package, as shown above.) This is what the failing `dependency-scan` step printed on the runner, trimmed only of the advisory URLs:
+
+```
+Trivy filesystem scan (package-lock.json)
+
+package-lock.json (npm)
+=======================
+Total: 4 (HIGH: 4, CRITICAL: 0)
+
+┌─────────┬────────────────┬──────────┬────────┬───────────────────┬───────────────┬──────────────────────────────────────────────────────────────┐
+│ Library │ Vulnerability  │ Severity │ Status │ Installed Version │ Fixed Version │                            Title                             │
+├─────────┼────────────────┼──────────┼────────┼───────────────────┼───────────────┼──────────────────────────────────────────────────────────────┤
+│ lodash  │ CVE-2020-8203  │ HIGH     │ fixed  │ 4.17.15           │ 4.17.19       │ nodejs-lodash: prototype pollution in zipObjectDeep function │
+│         │ CVE-2021-23337 │          │        │                   │ 4.17.21       │ nodejs-lodash: command injection via template                │
+│         │ CVE-2026-4800  │          │        │                   │ 4.18.0        │ lodash: lodash: Arbitrary code execution via untrusted input │
+│         │ NSWG-ECO-516   │          │        │                   │ >=4.17.19     │ Allocation of Resources Without Limits or Throttling         │
+└─────────┴────────────────┴──────────┴────────┴───────────────────┴───────────────┴──────────────────────────────────────────────────────────────┘
+##[error]Process completed with exit code 1.
+```
+
+The `docker` job on the same run builds the image from the branch and its `trivy image` step reports the same four CVEs under `app/node_modules/lodash/package.json` (`Total: 4 (HIGH: 4, CRITICAL: 0)`, exit code 1).
+
+![PR #1 run: dependency-scan and docker fail, the other three jobs pass](docs/screenshots/pr1-run-graph.png)
 
 ### `demo/leaked-secret` — fails `secret-scan`
 
@@ -269,18 +291,39 @@ RuleID:      aws-access-token
 Entropy:     3.508695
 File:        config/payments.js
 Line:        15
-Commit:      <the branch's single commit: git log -1 demo/leaked-secret>
+Commit:      e6d9a5767fde81c06c9a8d92818e9cd507124efd
 leaks found: 1
 exit code 1
 ```
 
 `gitleaks` scans commit diffs, so the leak is still reported if a later commit on the branch deletes the file; the only real fix is to rotate the credential and rewrite history.
 
-<!-- PR-LINK: leaked-secret -->
+**In CI.** The branch is open as [PR #2](https://github.com/Enzo-user/devsecops-exam-starter/pull/2); its workflow run is [CI run #3](https://github.com/Enzo-user/devsecops-exam-starter/actions/runs/35181037517). Only `secret-scan` fails. The action confirmed the licensing assumption (`[Enzo-user] is an individual user. No license key is required.`), scanned exactly the PR's commit range, and printed:
 
-The CI logs on the two PRs are the evidence; the blocks above are trimmed excerpts (columns and log noise removed) of what the failing jobs print, captured from the same commands on my machine.
+```
+gitleaks cmd: gitleaks detect --redact -v --exit-code=2 --report-format=sarif --report-path=results.sarif
+              --log-opts=--no-merges --first-parent e6d9a5767fde81c06c9a8d92818e9cd507124efd^..e6d9a5767fde81c06c9a8d92818e9cd507124efd
 
-<!-- CI-RUN-LINK: main -->
+Finding:     paymentsApiKey: 'REDACTED',
+Secret:      REDACTED
+RuleID:      aws-access-token
+Entropy:     3.508695
+File:        config/payments.js
+Line:        15
+Commit:      e6d9a5767fde81c06c9a8d92818e9cd507124efd
+Fingerprint: e6d9a5767fde81c06c9a8d92818e9cd507124efd:config/payments.js:aws-access-token:15
+INF 1 commits scanned.
+WRN leaks found: 1
+##[warning]🛑 Leaks detected, see job summary for details
+```
+
+![PR #2 run: secret-scan fails, the other four jobs pass](docs/screenshots/pr2-run-graph.png)
+
+The local blocks above are trimmed excerpts (columns and log noise removed) captured from the same commands on my machine; the "In CI" blocks and screenshots are taken from the linked runs.
+
+For comparison, the same workflow on `main` at the final commit: [CI run #1](https://github.com/Enzo-user/devsecops-exam-starter/actions/runs/35180988895), all five jobs green. Its `docker` job log shows the smoke-test assertions from the [Pipeline overview](#pipeline-overview) passing on the runner: `whoami` prints `node`, `no package manager in runtime image`, `exit code after docker stop: 143`, and the compose stack comes up with both containers `(healthy)`.
+
+![main run: all five jobs green](docs/screenshots/main-run-green.png)
 
 ## Branch protection
 
