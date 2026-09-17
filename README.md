@@ -330,10 +330,32 @@ For comparison, the same workflow on `main` at the final commit: [CI run #1](htt
 `main` is protected by a ruleset (repository **Settings → Rules → Rulesets**, targeting `main`) with:
 
 - pull request required before merging (no direct pushes);
-- required status checks, all from the `CI` workflow: `test`, `lint-dockerfile`, `dependency-scan`, `secret-scan`, `docker`, with "require branches to be up to date" enabled;
+- required status checks, all from the `CI` workflow: `test`, `lint-dockerfile`, `dependency-scan`, `secret-scan`, `docker`. "Require branches to be up to date before merging" is deliberately off: a `pull_request` run already tests the PR head merged into `main` as of that run, and with the option on, every docs commit to `main` flipped the demo PRs from "blocked by failing checks" to "out of date", hiding the state this repo exists to show;
 - force pushes and branch deletion blocked.
 
 The ruleset requires the checks; what each check asserts is described in [Pipeline overview](#pipeline-overview). With those in place the two demo PRs cannot be merged: the merge button stays disabled until the red check turns green, which for these branches means removing the planted problem.
+
+The ruleset is called `protect-main`. Evidence from the GitHub API, 17 September 2026:
+
+```
+$ gh api repos/Enzo-user/devsecops-exam-starter/rules/branches/main --jq '[.[] | .type] | join(", ")'
+deletion, non_fast_forward, pull_request, required_status_checks
+
+$ gh api repos/Enzo-user/devsecops-exam-starter/rules/branches/main \
+    --jq '.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context'
+test
+lint-dockerfile
+dependency-scan
+secret-scan
+docker
+
+$ gh pr view 1 --json mergeStateStatus --jq .mergeStateStatus
+BLOCKED
+$ gh pr view 2 --json mergeStateStatus --jq .mergeStateStatus
+BLOCKED
+```
+
+The rule applies to me as well: this section reached `main` through [PR #3](https://github.com/Enzo-user/devsecops-exam-starter/pull/3) once its five checks were green, because a direct push to `main` is rejected.
 
 ## Challenges faced
 
